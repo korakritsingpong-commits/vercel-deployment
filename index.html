@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ระบบสแกนใบอนุญาต (License Scanner)</title>
+  <meta name="description" content="ระบบสแกนใบอนุญาตสาธารณสุขและร้านขายยา อ่านข้อมูลอัตโนมัติด้วย On-Device OCR บันทึกลง Google Sheets">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <!-- External Libraries (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="container">
+      <div class="logo">
+        <span class="icon">📜</span>
+        <div>
+          <h1>ระบบสแกนใบอนุญาต</h1>
+          <p class="subtitle">Client-Side On-Device OCR (100% ปลอดภัย)</p>
+        </div>
+      </div>
+      <div class="header-status" id="headerStatus">
+        <span class="status-dot green"></span> พร้อมใช้งาน
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Config Banner for Google Apps Script URL -->
+    <section class="card config-card" id="configSection">
+      <div class="config-header">
+        <h2>⚙️ ตั้งค่า Google Sheets Web App</h2>
+        <button id="toggleConfigBtn" class="btn btn-sm btn-outline">ซ่อน/แสดง</button>
+      </div>
+      <div class="config-body" id="configBody">
+        <div class="form-group">
+          <label for="scriptUrlInput">Google Apps Script Web App URL:</label>
+          <input type="url" id="scriptUrlInput" placeholder="https://script.google.com/macros/s/.../exec" class="form-control">
+          <small class="help-text">นำ Web App URL ที่ได้จากการ Deploy Google Apps Script มาวางที่นี่เพื่อเชื่อมต่อ Google Sheets</small>
+        </div>
+        <button id="saveConfigBtn" class="btn btn-secondary btn-sm">บันทึกการตั้งค่า</button>
+      </div>
+    </section>
+
+    <!-- Upload & Action Zone -->
+    <section class="card upload-card">
+      <h2>📤 อัปโหลดภาพหรือไฟล์ใบอนุญาต</h2>
+      <p class="section-desc">รองรับไฟล์ภาพ (JPG, PNG, WEBP) และไฟล์เอกสาร (PDF) หรือถ่ายรูปจากกล้องมือถือ</p>
+
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-zone-content">
+          <span class="drop-icon">📷</span>
+          <h3>ลากไฟล์มาวางที่นี่ หรือ คลิกเพื่อเลือกไฟล์</h3>
+          <p>รองรับสแกนเดี่ยว และ สแกนหลายไฟล์พร้อมกัน (Batch Mode)</p>
+          <div class="action-buttons">
+            <label for="fileInput" class="btn btn-primary">
+              <span>📁 เลือกไฟล์ / PDF</span>
+            </label>
+            <input type="file" id="fileInput" accept="image/*,.pdf" multiple hidden>
+            
+            <label for="cameraInput" class="btn btn-accent">
+              <span>📸 ถ่ายภาพด้วยกล้อง</span>
+            </label>
+            <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+          </div>
+        </div>
+      </div>
+
+      <!-- OCR Progress Container -->
+      <div class="progress-container hidden" id="progressContainer">
+        <div class="progress-info">
+          <span id="progressStatus">กำลังประมวลผล OCR...</span>
+          <span id="progressPercent">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progressBarFill"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Workspace (Split View on Desktop / Tabs on Mobile) -->
+    <div class="workspace-grid hidden" id="workspaceGrid">
+      
+      <!-- Left: Batch Queue & Image Preview -->
+      <section class="card preview-card">
+        <div class="card-header">
+          <h3>🖼️ ภาพต้นฉบับ & แถบรายการ</h3>
+          <span class="badge badge-info" id="batchCountBadge">1 รายการ</span>
+        </div>
+
+        <!-- Batch Thumbnails Bar -->
+        <div class="batch-thumbnails" id="batchThumbnails"></div>
+
+        <!-- Main Preview Image Canvas -->
+        <div class="image-viewer-container">
+          <canvas id="previewCanvas"></canvas>
+        </div>
+
+        <!-- Raw Text Collapsible -->
+        <details class="raw-text-details">
+          <summary>🔍 ดูข้อความดิบที่อ่านได้ (Raw OCR Text)</summary>
+          <pre class="raw-text-box" id="rawTextBox">ยังไม่มีข้อมูล</pre>
+        </details>
+      </section>
+
+      <!-- Right: Extracted Data Form -->
+      <section class="card form-card">
+        <div class="card-header">
+          <h3>📝 ตรวจสอบและแก้ไขข้อมูลใบอนุญาต</h3>
+          <div class="confidence-summary" id="confidenceSummary">
+            ความแม่นยำรวม: <span class="badge" id="overallConfidenceBadge">-</span>
+          </div>
+        </div>
+
+        <form id="licenseForm" class="license-form">
+          <div class="form-row">
+            <div class="form-group col-full">
+              <label for="licenseType">ประเภทใบอนุญาต <span class="required">*</span></label>
+              <select id="licenseType" class="form-control" required>
+                <option value="ข.ย.1">ข.ย.1 — ใบอนุญาตขายยาแผนปัจจุบัน</option>
+                <option value="ข.ย.2">ข.ย.2 — ใบอนุญาตขายบรรจุเสร็จ (ไม่ขายยาควบคุมพิเศษ)</option>
+                <option value="ข.ย.3">ข.ย.3 — ใบอนุญาตขายยาแผนปัจจุบันเฉพาะยาบรรจุเสร็จสำหรับสัตว์</option>
+                <option value="ข.ย.4">ข.ย.4 — ใบอนุญาตขายขายส่งยาแผนปัจจุบัน</option>
+                <option value="ส.พ.7">ส.พ.7 — ใบอนุญาตให้ประกอบกิจการสถานพยาบาล</option>
+                <option value="ข.ย.บ.">ข.ย.บ. — ใบอนุญาตขายยาแผนโบราณ</option>
+                <option value="อื่นๆ">อื่นๆ / ไม่ระบุ</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-half">
+              <label for="licenseNo">เลขที่ใบอนุญาต <span class="confidence-tag" id="conf_licenseNo"></span></label>
+              <input type="text" id="licenseNo" class="form-control" placeholder="เช่น นบ 1/2569">
+            </div>
+            <div class="form-group col-half">
+              <label for="granteeName">ชื่อผู้รับอนุญาต <span class="confidence-tag" id="conf_granteeName"></span></label>
+              <input type="text" id="granteeName" class="form-control" placeholder="ชื่อบุคคล หรือ นิติบุคคล">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-full">
+              <label for="premisesName">ชื่อสถานที่ / ชื่อร้าน <span class="confidence-tag" id="conf_premisesName"></span></label>
+              <input type="text" id="premisesName" class="form-control" placeholder="เช่น ร้านยาเฮลท์อัพ สาขาบางใหญ่">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-half">
+              <label for="pharmacistName">ชื่อผู้มีหน้าที่ปฏิบัติการ / เภสัชกร <span class="confidence-tag" id="conf_pharmacistName"></span></label>
+              <input type="text" id="pharmacistName" class="form-control" placeholder="ภก./ภญ. ชื่อ-นามสกุล">
+            </div>
+            <div class="form-group col-half">
+              <label for="pharmacistRegNo">เลขทะเบียนเภสัชกรรม <span class="confidence-tag" id="conf_pharmacistRegNo"></span></label>
+              <input type="text" id="pharmacistRegNo" class="form-control" placeholder="เช่น ภ.12345">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-half">
+              <label for="issueDate">วันที่อนุญาต / เริ่มต้น <span class="confidence-tag" id="conf_issueDate"></span></label>
+              <input type="text" id="issueDate" class="form-control" placeholder="เช่น 1 มกราคม 2569">
+            </div>
+            <div class="form-group col-half">
+              <label for="expiryDate">วันหมดอายุ / ถึงวันที่ <span class="confidence-tag" id="conf_expiryDate"></span></label>
+              <input type="text" id="expiryDate" class="form-control" placeholder="เช่น 31 ธันวาคม 2569">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-full">
+              <label for="locationProvince">จังหวัด / อำเภอ <span class="confidence-tag" id="conf_locationProvince"></span></label>
+              <input type="text" id="locationProvince" class="form-control" placeholder="เช่น นนทบุรี / บางใหญ่">
+            </div>
+          </div>
+
+          <!-- Form Buttons -->
+          <div class="form-actions">
+            <button type="button" id="saveSingleBtn" class="btn btn-success">
+              <span>💾 บันทึกรายการนี้</span>
+            </button>
+            <button type="button" id="saveAllBtn" class="btn btn-primary">
+              <span>🚀 บันทึกทั้งหมด (<span id="batchPendingCount">1</span>)</span>
+            </button>
+            <button type="button" id="clearBtn" class="btn btn-danger btn-outline">
+              <span>🗑️ ล้างข้อมูล</span>
+            </button>
+          </div>
+        </form>
+      </section>
+
+    </div>
+
+    <!-- Recent Sync Log Table -->
+    <section class="card history-card">
+      <div class="card-header">
+        <h3>📋 ประวัติการสแกนในเซสชันนี้</h3>
+        <button id="clearHistoryBtn" class="btn btn-sm btn-outline">ล้างประวัติหน้าเว็บ</button>
+      </div>
+      <div class="table-responsive">
+        <table class="table" id="historyTable">
+          <thead>
+            <tr>
+              <th>เวลา</th>
+              <th>ประเภท</th>
+              <th>เลขที่ใบอนุญาต</th>
+              <th>ชื่อร้าน/สถานที่</th>
+              <th>ผู้รับอนุญาต</th>
+              <th>ความแม่นยำ</th>
+              <th>สถานะการส่ง</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr class="empty-row">
+              <td colspan="7">ยังไม่มีรายการสแกนที่บันทึก</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="app-footer">
+    <div class="container">
+      <p>ระบบสแกนใบอนุญาต On-Device OCR | พัฒนาด้วย HTML5, Vanilla CSS, Tesseract.js (WASM) & Google Apps Script</p>
+      <p class="privacy-note">🔒 ภาพถ่ายและข้อมูลประมวลผลในเครื่องของคุณ 100% ไม่มีการส่งภาพไปภายนอก</p>
+    </div>
+  </footer>
+
+  <!-- Script Files -->
+  <script src="js/ocr-engine.js"></script>
+  <script src="js/parser.js"></script>
+  <script src="js/pdf-handler.js"></script>
+  <script src="js/sheets-api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
